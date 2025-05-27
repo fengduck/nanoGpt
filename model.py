@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
+#层归一化 它对最后一个维度做标准化
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -26,6 +26,7 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
+#因果自注意力机制
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -86,9 +87,12 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)  #业界通常都是写四倍，这样模型表达能力更强
+        # GELU(Gaussian Error Linear Unit) 是Transformer中标准的非线性函数，它比 ReLU 更平滑，有更好的梯度流动效果
         self.gelu    = nn.GELU()
+        # 第二层全连接 + 压缩回原维度 实际上是对特征进行“深层非线性变换”
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        # Dropout 正则化 训练时随机丢弃一部分神经元，防止过拟合 config.dropout 一般取 0.1 ~ 0.3
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -107,9 +111,9 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+    def forward(self, x):  # x = [B, T, C/n_embd]
+        x = x + self.attn(self.ln_1(x))  #pre_ln 第一个层归一化  加法是做残差连接
+        x = x + self.mlp(self.ln_2(x))   #post_ln 注意力机制之后的层归一化
         return x
 
 @dataclass
