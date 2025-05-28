@@ -135,7 +135,7 @@ class GPT(nn.Module):
         self.config = config  #将config定义成自己的成员变量
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab _size, config.n_embd),  #wte word token embedding
+            wte = nn.Embedding(config.vocab_size, config.n_embd),  #wte word token embedding
             wpe = nn.Embedding(config.block_size, config.n_embd),   #wpe word position embedding
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),  #一个层就是一个Block
@@ -171,6 +171,7 @@ class GPT(nn.Module):
         The token embeddings would too, except due to the parameter sharing these
         params are actually used as weights in the final layer, so we include them.
         """
+        # numel()可训练参数的权重矩阵里面数字的总个数   parameters() 获取模型的全乎可训练参数 比如weight和bias
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
             n_params -= self.transformer.wpe.weight.numel()
@@ -199,11 +200,11 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
+        if targets is not None:  #训练阶段
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
+            logits = self.lm_head(x)  #[B, T, V]
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-        else:
+        else:  #推理阶段
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
