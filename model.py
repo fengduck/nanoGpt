@@ -132,25 +132,31 @@ class GPT(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
-        self.config = config
+        self.config = config  #将config定义成自己的成员变量
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wte = nn.Embedding(config.vocab _size, config.n_embd),  #wte word token embedding
+            wpe = nn.Embedding(config.block_size, config.n_embd),   #wpe word position embedding
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),  #一个层就是一个Block
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        # 把每个 token 的隐藏向量（维度是 n_embd）映射为词表大小的向量（vocab_size），表示每个位置上每个词的概率分数（logits）
+        # 每一个位置上都会变成一个大小为 vocab_size 的向量，用来做 softmax，得到预测词的概率。
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)  #最后用来输出每个单词概率的线型层
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying  #共享权重。原因是 1.可训练参数少了 2.防止过拟合   词空间到embedding embedding到词空间
 
         # init all weights
+        # 对当前模块和它所有的 子模块（submodules） 递归地调用 你给的函数
+        # 使用场景：典型用于 初始化权重
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
+        # named_parameters() 会递归地遍历当前模块（nn.Module）以及所有子模块，返回所有参数的 名字 和 张量（Parameter）pn=xx.xx.weight/bias  p = tensor
+        # PyTorch 的 named_parameters() 只返回那些是 nn.Parameter 类型的成员，换句话说，只有那些“可训练的权重参数”才会被返回。
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
@@ -172,7 +178,8 @@ class GPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            # 初始化得好，训练时更稳定，梯度不容易爆炸或消失。
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  #把这个线性层的 权重参数 weight 用一个 均值为 0，标准差为 0.02 的正态分布 初始化。
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
