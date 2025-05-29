@@ -48,6 +48,9 @@ class CausalSelfAttention(nn.Module):
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
+            # 把构造好的 causal mask（因果掩码矩阵）注册成模块的 buffer，这样它会随着模型保存、加载，但不会作为可训练参数更新
+            # 用来注册“非训练参数但又是模型一部分的数据”
+            # 不会被 optimizer 优化更新
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
@@ -72,8 +75,8 @@ class CausalSelfAttention(nn.Module):
                                                                  )
         else:
             # manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))    # 这里的att的维度是(B, nh, T, T)
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))   #TODO 这里有个疑问，T和embed_dim维度对得上吗
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -118,13 +121,19 @@ class Block(nn.Module):
 
 @dataclass
 class GPTConfig:
-    block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-    dropout: float = 0.0
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    block_size: int = 1024  # ✅ 输入序列的最大长度（即 Transformer 可以看到的最大 token 数）
+
+        vocab_size: int = 50304  # ✅ 模型词表大小（GPT-2 是 50257，这里补齐到 64 的倍数以利于张量并行加速）
+
+        n_layer: int = 12  # ✅ Transformer Block 的层数（每层包含注意力和 MLP）
+
+        n_head: int = 12  # ✅ 多头注意力机制的头数（即每层注意力拆分成几个并行子空间）
+
+        n_embd: int = 768  # ✅ 每个 token 的嵌入维度，也是注意力/MLP 中的表示维度
+
+        dropout: float = 0.0  # ✅ dropout 概率，防止过拟合（训练时生效）
+
+        bias: bool = True  # ✅ 控制 nn.Linear 和 LayerNorm 是否使用 bias（GPT-2 默认是 True；False 可以略提速）
 
 class GPT(nn.Module):
 
@@ -186,11 +195,11 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None):  #idx [b , t]  targets [b , t] 在训练时才传值
         device = idx.device
-        b, t = idx.size()
+        b, t = idx.size()  #文本在词表中映射的索引 b为句子条数，t为句子单词/token个数
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t) 句子中单词/token的位置索引。0～t-1
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
@@ -206,17 +215,23 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:  #推理阶段
             # inference-time mini-optimization: only forward the lm_head on the very last position
+            # ？？？把最后一个词/token的logits给算出来
+            # shape: [B, 1, V]
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
         return logits, loss
 
+    # 对模型做裁剪
+    # 将模型支持训练的最大序列长度缩短
+    # 这是“模型结构微调”（model surgery）操作，用来把一个预训练模型支持的最大序列长度（block_size）从比如 1024 剪裁成更小的值（比如 256、128 等），提升效率或适配设备
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
         # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
         # but want to use a smaller block size for some smaller, simpler model
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
+        #x[:,:,a:,b:] 截取张量。只有冒号代表这个维度的全部，冒号后面带数字表示这个维度的前多少 这里用 nn.Parameter(...) 是为了确保它仍然是可训练参数。
         self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
