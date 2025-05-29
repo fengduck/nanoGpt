@@ -123,17 +123,17 @@ class Block(nn.Module):
 class GPTConfig:
     block_size: int = 1024  # ✅ 输入序列的最大长度（即 Transformer 可以看到的最大 token 数）
 
-        vocab_size: int = 50304  # ✅ 模型词表大小（GPT-2 是 50257，这里补齐到 64 的倍数以利于张量并行加速）
+    vocab_size: int = 50304  # ✅ 模型词表大小（GPT-2 是 50257，这里补齐到 64 的倍数以利于张量并行加速）
 
-        n_layer: int = 12  # ✅ Transformer Block 的层数（每层包含注意力和 MLP）
+    n_layer: int = 12  # ✅ Transformer Block 的层数（每层包含注意力和 MLP）
 
-        n_head: int = 12  # ✅ 多头注意力机制的头数（即每层注意力拆分成几个并行子空间）
+    n_head: int = 12  # ✅ 多头注意力机制的头数（即每层注意力拆分成几个并行子空间）
 
-        n_embd: int = 768  # ✅ 每个 token 的嵌入维度，也是注意力/MLP 中的表示维度
+    n_embd: int = 768  # ✅ 每个 token 的嵌入维度，也是注意力/MLP 中的表示维度
 
-        dropout: float = 0.0  # ✅ dropout 概率，防止过拟合（训练时生效）
+    dropout: float = 0.0  # ✅ dropout 概率，防止过拟合（训练时生效）
 
-        bias: bool = True  # ✅ 控制 nn.Linear 和 LayerNorm 是否使用 bias（GPT-2 默认是 True；False 可以略提速）
+    bias: bool = True  # ✅ 控制 nn.Linear 和 LayerNorm 是否使用 bias（GPT-2 默认是 True；False 可以略提速）
 
 class GPT(nn.Module):
 
@@ -166,7 +166,7 @@ class GPT(nn.Module):
         # apply special scaled init to the residual projections, per GPT-2 paper
         # named_parameters() 会递归地遍历当前模块（nn.Module）以及所有子模块，返回所有参数的 名字 和 张量（Parameter）pn=xx.xx.weight/bias  p = tensor
         # PyTorch 的 named_parameters() 只返回那些是 nn.Parameter 类型的成员，换句话说，只有那些“可训练的权重参数”才会被返回。
-        for pn, p in self.named_parameters():
+        for pn, p in self.named_parameters():  #每一个元素都是一个元组 tuple
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
@@ -217,7 +217,7 @@ class GPT(nn.Module):
             # inference-time mini-optimization: only forward the lm_head on the very last position
             # ？？？把最后一个词/token的logits给算出来
             # shape: [B, 1, V]
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm__head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
         return logits, loss
@@ -225,7 +225,7 @@ class GPT(nn.Module):
     # 对模型做裁剪
     # 将模型支持训练的最大序列长度缩短
     # 这是“模型结构微调”（model surgery）操作，用来把一个预训练模型支持的最大序列长度（block_size）从比如 1024 剪裁成更小的值（比如 256、128 等），提升效率或适配设备
-    def crop_block_size(self, block_size):
+    def crop_block_size(self, block_size):  #block_size就是最大序列长度，每个句子序列的最大单词数/token个数
         # model surgery to decrease the block size if necessary
         # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
         # but want to use a smaller block size for some smaller, simpler model
@@ -237,6 +237,10 @@ class GPT(nn.Module):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
+    # 这段代码的核心目的是从 HuggingFace 的预训练 GPT 模型中加载权重，并将其适配到你自定义的模型结构中
+    # 这段代码的作用是从HuggingFace的库中获取已训练好的GPT模型，并将该模型的各种训练好的权重（如
+    # weight, bias等）适配并加载到你自定义的GPT模型中，使得你可以复用官方的预训练权重进行推理或进一步微调。
+    # 具体来说，它实现了以下几方面的功能：
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
@@ -294,17 +298,20 @@ class GPT(nn.Module):
 
         return model
 
+    # 定义一个优化器
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # start with all of the candidate parameters
-        param_dict = {pn: p for pn, p in self.named_parameters()}
+        # self.named_parameters() 是 PyTorch 提供的方法，返回一个迭代器，每次返回 (name, parameter) 的元组
+        # 迭代器可以通过 list() 函数转换成列表
+        param_dict = {pn: p for pn, p in self.named_parameters()} #遍历获取kv组成字典序列的一种方式
         # filter out those that do not require grad
-        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad} #过滤掉不需要梯度更新的参数 这一步是为了排除这些参数，避免它们参与优化
         # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
         # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': decay_params, 'weight_decay': weight_decay},  # weight_decay通常是0.01
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
@@ -336,7 +343,7 @@ class GPT(nn.Module):
         mfu = flops_achieved / flops_promised
         return mfu
 
-    @torch.no_grad()
+    @torch.no_grad()  #注解作用：让这部分函数在计算时是没有梯度的
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
@@ -345,14 +352,14 @@ class GPT(nn.Module):
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]   #对张量的截图方式  逆向截取[: , -T:](最后T列) 正向截取[:, :T](前T列)
             # forward the model to get the logits for the index in the sequence
             logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
             if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))   #这个也是mask
                 logits[logits < v[:, [-1]]] = -float('Inf')
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
